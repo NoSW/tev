@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#pragma optimize("", off)
 
 #include <tev/Image.h>
 #include <tev/imageio/ImageLoader.h>

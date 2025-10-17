@@ -21,11 +21,15 @@
 #include <tev/ThreadPool.h>
 
 #include <tev/imageio/ImageSaver.h>
+#include <tev/imageio/ImageLoader.h>
 
 #include <nanogui/opengl.h>
 #include <nanogui/screen.h>
 #include <nanogui/theme.h>
 #include <nanogui/vector.h>
+
+#include <FLIP.h>
+#include <stb_image_write.h>
 
 #include <fstream>
 #include <set>
@@ -97,6 +101,7 @@ void ImageCanvas::draw_contents() {
         inverse(transform(mImage.get())),
         reference,
         inverse(transform(mReference.get())),
+        mErrorMap.get(),
         mRequestedChannelGroup,
         mMinFilter,
         mMagFilter,
@@ -616,6 +621,7 @@ float ImageCanvas::applyMetric(float image, float reference, EMetric metric) {
         case EMetric::SquaredError: return diff * diff;
         case EMetric::RelativeAbsoluteError: return abs(diff) / (reference + 0.01f);
         case EMetric::RelativeSquaredError: return diff * diff / (reference * reference + 0.01f);
+        case EMetric::FLIP: return 0.0f;
         default: throw runtime_error{"Invalid metric selected."};
     }
 }
@@ -1098,6 +1104,86 @@ Matrix3f ImageCanvas::displayWindowToNanogui(const Image* image) {
 
     // Shift texture coordinates by the data coordinate offset. It's that simple.
     return textureToNanogui(image) * Matrix3f::translate(-image->dataWindow().min);
+}
+
+void ImageCanvas::updateCachedFLIP()
+{
+    mErrorMap = nullptr;
+    mMeanFLIPError = 0.0f;
+    if (!mReference || !mImage || mReference == mImage) {
+        return;
+    }
+
+    ImageData imgData;
+    imgData.channels = ImageLoader::makeRgbaInterleavedChannels(3, false, mImage->size(), EPixelFormat::F32, EPixelFormat::F16);
+    imgData.dataWindow = Box2i{ Vector2i{0}, mImage->size() };
+    imgData.displayWindow = imgData.dataWindow;
+    const fs::path dummyPath("Internal-Used");
+    mErrorMap = std::make_unique<Image>(dummyPath, fs::file_time_type::clock::now(), std::move(imgData), std::string_view(""), true);
+
+    const auto size = mImage->size();
+    const Vector2i offset = (Vector2i{mReference->size().x(), mReference->size().y()} - size) / 2;
+    vector<float> referenceFLIP(size.x() * size.y() * 3);   
+    vector<float> testFLIP(size.x() * size.y() * 3);
+    const string kAllChannelNames[3] = {"R", "G", "B"};
+    const Channel* channelsTest[3] = {nullptr, nullptr, nullptr};
+    const Channel* channelsReference[3] = {nullptr, nullptr, nullptr};
+    for (size_t c = 0; c < 3; ++c) {
+        channelsTest[c] = mImage->channel(kAllChannelNames[c]);
+        channelsReference[c] = mReference->channel(kAllChannelNames[c]);
+    }
+
+    bool useHDR = false;
+    for (int x = 0; x < size.x(); ++x) {
+        for (int y = 0; y < size.y(); ++y) {
+            for (size_t c = 0; c < 3; ++c) {
+                int linearPos = (x * size.y() + y) * 3 + c;
+                testFLIP[linearPos] = channelsTest[c] ? channelsTest[c]->eval({x, y}) : 0.0f;
+                referenceFLIP[linearPos] = channelsReference[c] ? channelsReference[c]->eval({x + offset.x(), y + offset.y()}) : 0.0f;
+                if (!(testFLIP[linearPos] <= 1.0f && referenceFLIP[linearPos] <= 1.0f)) {
+                    useHDR = true;
+                }
+            }
+        }
+    }
+    
+    bool applyMagmaMapToOutput = false;
+    bool computeMeanFLIPError = true;
+    FLIP::Parameters flipParams {};
+    float* pOutErrorMap = nullptr;
+    FLIP::evaluate(referenceFLIP.data(), testFLIP.data(), size.x(), size.y(), useHDR, flipParams, applyMagmaMapToOutput, computeMeanFLIPError, mMeanFLIPError, &pOutErrorMap);
+    if (pOutErrorMap)
+    {
+       /* const std::vector<std::string> names{"R", "G", "B"};
+        auto channels = mErrorMap->channels(names);
+        float* pDstR = (float*)(channels[0]->data());
+        float* pDstG = (float*)(channels[1]->data());
+        float* pDstB = (float*)(channels[2]->data());
+        for (int x = 0; x < size.x(); ++x)
+        {
+            for (int y = 0; y < size.y(); ++y)
+            {
+                int linearPos = (x * size.y() + y);
+                pDstR[linearPos] = pOutErrorMap[linearPos * 3 + 0];
+                pDstG[linearPos] = pOutErrorMap[linearPos * 3 + 1];
+                pDstB[linearPos] = pOutErrorMap[linearPos * 3 + 2];
+            }
+        }*/
+        vector<uint8_t> pngData(size.x() * size.y());
+        for (int x = 0; x < size.x(); ++x) {
+            for (int y = 0; y < size.y(); ++y) {
+                int linearPos = (y * size.x() + x);
+                float v = pOutErrorMap[linearPos + 0];
+                v = clamp(v, 0.0f, 1.0f);
+                pngData[linearPos] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+            }
+        }
+        stbi_write_png("FLIP.png", size.x(), size.y(), 1, pngData.data(), size.x());
+
+        delete[] pOutErrorMap;
+    }
+    
+    
 }
 
 } // namespace tev

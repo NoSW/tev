@@ -42,6 +42,7 @@ public:
         const nanogui::Matrix3f& transformImage,
         Image* textureReference,
         const nanogui::Matrix3f& transformReference,
+        Image* errorMap,
         std::string_view requestedChannelGroup,
         EInterpolationMode minFilter,
         EInterpolationMode magFilter,

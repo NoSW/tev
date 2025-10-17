@@ -103,6 +103,7 @@ UberShader::UberShader(RenderPass* renderPass, float ditherScale) {
             #define SQUARED_ERROR           2
             #define RELATIVE_ABSOLUTE_ERROR 3
             #define RELATIVE_SQUARED_ERROR  4
+            #define FLIP                    5
 
             #define CHANNEL_CONFIG_R    0
             #define CHANNEL_CONFIG_RG   1
@@ -116,6 +117,9 @@ UberShader::UberShader(RenderPass* renderPass, float ditherScale) {
 
             uniform sampler2D reference;
             uniform bool hasReference;
+
+            uniform sampler2D errorMap;
+            uniform bool hasErrorMap;
 
             uniform int channelConfig;
 
@@ -257,10 +261,19 @@ UberShader::UberShader(RenderPass* renderPass, float ditherScale) {
                 vec4 referenceVal = sample(reference, referenceUv);
                 referenceVal.a *= cropAlpha;
 
+
+                vec4 errorMapVal = vec4(1.0, 0.0, 1.0, 0.0);
+                if (hasErrorMap) {
+                    errorMapVal = sample(errorMap, imageUv);
+                }
+
                 vec3 difference = imageVal.rgb - referenceVal.rgb;
                 float alpha = (imageVal.a + referenceVal.a) * 0.5;
+                vec3 metricVal = 
+                    (metric == FLIP) ? errorMapVal.rgb : 
+                    applyMetric(imageVal.rgb - referenceVal.rgb, referenceVal.rgb);
                 vec4 result = vec4(
-                    applyTonemap(applyExposureAndOffset(applyMetric(difference, referenceVal.rgb)), vec4(checker, 1.0 - alpha)),
+                    applyTonemap(applyExposureAndOffset(metricVal), vec4(checker, 1.0 - alpha)),
                     1.0
                 );
 
@@ -553,6 +566,7 @@ void UberShader::draw(
     const Matrix3f& transformImage,
     Image* reference,
     const Matrix3f& transformReference,
+    Image* errorMap,
     string_view requestedChannelGroup,
     EInterpolationMode minFilter,
     EInterpolationMode magFilter,
@@ -569,6 +583,7 @@ void UberShader::draw(
     const vector<string> channels = image ? image->channelsInGroup(requestedChannelGroup) : vector<string>{};
     Texture* const textureImage = image ? image->texture(channels, minFilter, magFilter) : mColorMap.get();
     Texture* const textureReference = reference ? reference->texture(channels, minFilter, magFilter) : textureImage;
+    Texture* const textureErrorMap = errorMap ? errorMap->texture(channels, minFilter, magFilter) : textureImage;
 
     const bool hasAlpha = channels.size() > 1 && Channel::isAlpha(channels.back()); // Only count A as alpha if it isn't the only channel.
     const int numColorChannels = channels.size() - (hasAlpha ? 1 : 0);
@@ -586,8 +601,11 @@ void UberShader::draw(
     bindImageData(textureImage, transformImage, exposure, offset, gamma, tonemap);
     bindReferenceData(textureReference, transformReference, metric);
 
+   mShader->set_texture("errorMap", textureErrorMap);
+
     mShader->set_uniform("hasImage", (bool)image);
     mShader->set_uniform("hasReference", (bool)reference);
+    mShader->set_uniform("hasErrorMap", (bool)errorMap);
 
     mShader->set_uniform("channelConfig", (int)channelConfig);
 

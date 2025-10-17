@@ -98,3 +98,6 @@
 	path = dependencies/LibRaw-cmake
 	url = https://github.com/LibRaw/LibRaw-cmake
 	shallow = true
+[submodule "dependencies/flip"]
+	path = dependencies/flip
+	url = https://github.com/NVlabs/flip

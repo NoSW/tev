@@ -61,8 +61,8 @@ public:
 
     float applyExposureAndOffset(float value) const;
 
-    void setImage(std::shared_ptr<Image> image) { mImage = image; }
-    void setReference(std::shared_ptr<Image> reference) { mReference = reference; }
+    void setImage(std::shared_ptr<Image> image) { mImage = image; updateCachedFLIP(); }
+    void setReference(std::shared_ptr<Image> reference) { mReference = reference; updateCachedFLIP(); }
     void setRequestedChannelGroup(std::string_view groupName) { mRequestedChannelGroup = groupName; }
 
     nanogui::Vector2i getImageCoords(const Image* image, nanogui::Vector2i mousePos);
@@ -146,6 +146,8 @@ private:
     nanogui::Matrix3f textureToNanogui(const Image* image);
     nanogui::Matrix3f displayWindowToNanogui(const Image* image);
 
+    void updateCachedFLIP();
+
     float mPixelRatio = 1;
     float mExposure = 0;
     float mOffset = 0;
@@ -158,6 +160,8 @@ private:
 
     std::shared_ptr<Image> mImage;
     std::shared_ptr<Image> mReference;
+    std::unique_ptr<Image> mErrorMap;
+    float mMeanFLIPError = 0.0f;
 
     std::string mRequestedChannelGroup = "";
 

@@ -238,6 +238,7 @@ target_include_directories(tev PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/stb
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/tinylogger
     ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/utfcpp/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/flip/src/cpp
 )
 
 set(TEV_DEFINITIONS -DTEV_VERSION="${TEV_VERSION_ARCH}")
