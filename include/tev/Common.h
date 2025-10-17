@@ -418,7 +418,9 @@ enum EMetric : int {
     SquaredError,
     RelativeAbsoluteError,
     RelativeSquaredError,
+#ifdef TEV_SUPPORT_FLIP 
     FLIP,
+#endif
 
     // This enum value should never be used directly. It facilitates looping over all members of this enum.
     NumMetrics,

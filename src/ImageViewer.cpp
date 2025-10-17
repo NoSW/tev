@@ -293,9 +293,12 @@ ImageViewer::ImageViewer(
         makeMetricButton("SE", [this]() { setMetric(EMetric::SquaredError); });
         makeMetricButton("RAE", [this]() { setMetric(EMetric::RelativeAbsoluteError); });
         makeMetricButton("RSE", [this]() { setMetric(EMetric::RelativeSquaredError); });
+    #ifdef TEV_SUPPORT_FLIP
         makeMetricButton("FLIP", [this]() { setMetric(EMetric::FLIP); });
-
         setMetric(EMetric::FLIP);
+    #else
+        setMetric(EMetric::Error);
+    #endif
 
         mMetricButtonContainer->set_tooltip(
             "Error metric selection. Given a reference image r and the selected image i, "
@@ -314,10 +317,11 @@ ImageViewer::ImageViewer(
             "|i - r| / (r + 0.01)\n\n"
 
             "RSE (Relative Squared Error)\n"
-            "(i - r)² / (r² + 0.01)\n\n"
-
-            "FLIP (developed by NVIDIA)\n"
-            "error map that indicates where an observer would perceive errors"
+            "(i - r)² / (r² + 0.01)"
+#ifdef TEV_SUPPORT_FLIP
+            "\n\nFLIP (developed by NVIDIA)\n"
+            "a diff evaluator for alternating images"
+#endif
         );
     }
 

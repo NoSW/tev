@@ -378,8 +378,10 @@ EMetric toMetric(string_view name) {
         return RelativeAbsoluteError;
     } else if (upperName == "RSE") {
         return RelativeSquaredError;
+#ifdef TEV_SUPPORT_FLIP
     } else if (upperName == "FLIP") {
         return FLIP;
+#endif
     } else {
         return Error;
     }

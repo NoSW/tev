@@ -21,15 +21,22 @@
 #include <tev/ThreadPool.h>
 
 #include <tev/imageio/ImageSaver.h>
-#include <tev/imageio/ImageLoader.h>
 
 #include <nanogui/opengl.h>
 #include <nanogui/screen.h>
 #include <nanogui/theme.h>
 #include <nanogui/vector.h>
 
+#ifdef TEV_SUPPORT_FLIP
+#include <tev/imageio/ImageLoader.h>
+
 #include <FLIP.h>
+#define DEBUG_OUTPUT_FLIP_TO_PNG 0
+#if DEBUG_OUTPUT_FLIP_TO_PNG
 #include <stb_image_write.h>
+#endif
+#endif
+
 
 #include <fstream>
 #include <set>
@@ -576,8 +583,14 @@ void ImageCanvas::getValuesAtNanoPos(Vector2i nanoPos, vector<float>& result, sp
 
             const Channel* c = mReference->channel(channels[i]);
             float reference = c ? c->eval(referenceCoords) : defaultVal;
-
-            result[i] = isAlpha ? 0.5f * (result[i] + reference) : applyMetric(result[i], reference);
+#ifdef TEV_SUPPORT_FLIP
+            bool useErrorMap = mMetric == EMetric::FLIP && mErrorMap && mErrorMap->contains(referenceCoords);
+#endif
+            result[i] = isAlpha ? 0.5f * (result[i] + reference) : (
+#ifdef TEV_SUPPORT_FLIP
+                useErrorMap ? mErrorMap->channel(channels[i])->eval({referenceCoords}) :
+#endif
+                    applyMetric(result[i], reference));
         }
     }
 }
@@ -621,7 +634,9 @@ float ImageCanvas::applyMetric(float image, float reference, EMetric metric) {
         case EMetric::SquaredError: return diff * diff;
         case EMetric::RelativeAbsoluteError: return abs(diff) / (reference + 0.01f);
         case EMetric::RelativeSquaredError: return diff * diff / (reference * reference + 0.01f);
+    #ifdef TEV_SUPPORT_FLIP
         case EMetric::FLIP: return 0.0f;
+    #endif
         default: throw runtime_error{"Invalid metric selected."};
     }
 }
@@ -660,7 +675,7 @@ std::vector<float> ImageCanvas::getHdrImageData(bool divideAlpha, int priority) 
         return {};
     }
 
-    const auto& channels = channelsFromImages(mImage, mReference, mRequestedChannelGroup, mMetric, priority);
+    const auto& channels = channelsFromImages(mImage, mReference, mRequestedChannelGroup, mMetric, priority, mErrorMap);
     if (channels.empty()) {
         return {};
     }
@@ -827,13 +842,14 @@ shared_ptr<Lazy<shared_ptr<CanvasStatistics>>> ImageCanvas::canvasStatistics() {
     invokeTaskDetached(
         [image = mImage,
          reference = mReference,
+         errorMap = mErrorMap,
          requestedChannelGroup = mRequestedChannelGroup,
          metric = mMetric,
          region = cropInImageCoords(),
          priority = ++sId,
          p = std::move(promise)]() mutable -> Task<void> {
             co_await ThreadPool::global().enqueueCoroutine(priority);
-            p.set_value(co_await computeCanvasStatistics(image, reference, requestedChannelGroup, metric, region, priority));
+            p.set_value(co_await computeCanvasStatistics(image, reference, requestedChannelGroup, metric, region, priority, errorMap));
             redrawWindow();
         }
     );
@@ -850,7 +866,7 @@ void ImageCanvas::purgeCanvasStatistics(int imageId) {
 }
 
 vector<Channel> ImageCanvas::channelsFromImages(
-    shared_ptr<Image> image, shared_ptr<Image> reference, string_view requestedChannelGroup, EMetric metric, int priority
+    shared_ptr<Image> image, shared_ptr<Image> reference, string_view requestedChannelGroup, EMetric metric, int priority, shared_ptr<Image> errorMap
 ) {
     if (!image) {
         return {};
@@ -884,7 +900,9 @@ vector<Channel> ImageCanvas::channelsFromImages(
         for (size_t i = 0; i < channelNames.size(); ++i) {
             isAlpha[i] = Channel::isAlpha(channelNames[i]);
         }
-
+#ifdef TEV_SUPPORT_FLIP
+        bool readyToUseErrorMap = errorMap && metric == EMetric::FLIP;
+#endif
         ThreadPool::global().parallelFor<int>(
             0,
             size.y(),
@@ -904,8 +922,14 @@ vector<Channel> ImageCanvas::channelsFromImages(
                         }
                     } else {
                         for (int x = 0; x < size.x(); ++x) {
+                        #ifdef  TEV_SUPPORT_FLIP
+                            bool useErrorMap = readyToUseErrorMap && errorMap->contains({x, y});
+                        #endif
                             result[c].setAt(
                                 {x, y},
+                        #ifdef  TEV_SUPPORT_FLIP
+                                useErrorMap ? errorMap->channel(channelNames[c])->eval({x, y}) :
+                        #endif
                                 ImageCanvas::applyMetric(
                                     channel->eval({x, y}), referenceChannel ? referenceChannel->eval({x + offset.x(), y + offset.y()}) : 0.0f, metric
                                 )
@@ -922,12 +946,12 @@ vector<Channel> ImageCanvas::channelsFromImages(
 }
 
 Task<shared_ptr<CanvasStatistics>> ImageCanvas::computeCanvasStatistics(
-    std::shared_ptr<Image> image, std::shared_ptr<Image> reference, string_view requestedChannelGroup, EMetric metric, const Box2i& region, int priority
+    std::shared_ptr<Image> image, std::shared_ptr<Image> reference, string_view requestedChannelGroup, EMetric metric, const Box2i& region, int priority, std::shared_ptr<Image> errorMap
 ) {
     TEV_ASSERT(region.isValid(), "Region must be valid.");
     TEV_ASSERT(Box2i{image->size()}.contains(region), "Region must be contained in image.");
 
-    auto flattened = channelsFromImages(image, reference, requestedChannelGroup, metric, priority);
+    auto flattened = channelsFromImages(image, reference, requestedChannelGroup, metric, priority, errorMap);
 
     double mean = 0;
     float maximum = -numeric_limits<float>::infinity();
@@ -1106,8 +1130,9 @@ Matrix3f ImageCanvas::displayWindowToNanogui(const Image* image) {
     return textureToNanogui(image) * Matrix3f::translate(-image->dataWindow().min);
 }
 
-void ImageCanvas::updateCachedFLIP()
+void ImageCanvas::updateErrorMap()
 {
+#ifdef TEV_SUPPORT_FLIP
     mErrorMap = nullptr;
     mMeanFLIPError = 0.0f;
     if (!mReference || !mImage || mReference == mImage) {
@@ -1115,17 +1140,19 @@ void ImageCanvas::updateCachedFLIP()
     }
 
     ImageData imgData;
-    imgData.channels = ImageLoader::makeRgbaInterleavedChannels(3, false, mImage->size(), EPixelFormat::F32, EPixelFormat::F16);
+    bool hasAlpha = true;
+    int dstChannelCount = hasAlpha ? 4 : 3;
+    imgData.channels = ImageLoader::makeRgbaInterleavedChannels(dstChannelCount, hasAlpha, mImage->size(), EPixelFormat::F32, EPixelFormat::F16);
     imgData.dataWindow = Box2i{ Vector2i{0}, mImage->size() };
     imgData.displayWindow = imgData.dataWindow;
     const fs::path dummyPath("Internal-Used");
-    mErrorMap = std::make_unique<Image>(dummyPath, fs::file_time_type::clock::now(), std::move(imgData), std::string_view(""), true);
+    mErrorMap = std::make_shared<Image>(dummyPath, fs::file_time_type::clock::now(), std::move(imgData), std::string_view(""), true);
 
     const auto size = mImage->size();
     const Vector2i offset = (Vector2i{mReference->size().x(), mReference->size().y()} - size) / 2;
     vector<float> referenceFLIP(size.x() * size.y() * 3);   
     vector<float> testFLIP(size.x() * size.y() * 3);
-    const string kAllChannelNames[3] = {"R", "G", "B"};
+    const std::vector<std::string> kAllChannelNames{"R", "G", "B", "A"};
     const Channel* channelsTest[3] = {nullptr, nullptr, nullptr};
     const Channel* channelsReference[3] = {nullptr, nullptr, nullptr};
     for (size_t c = 0; c < 3; ++c) {
@@ -1134,10 +1161,10 @@ void ImageCanvas::updateCachedFLIP()
     }
 
     bool useHDR = false;
-    for (int x = 0; x < size.x(); ++x) {
-        for (int y = 0; y < size.y(); ++y) {
+    for (int y = 0; y < size.y(); ++y) {
+        for (int x = 0; x < size.x(); ++x) {
             for (size_t c = 0; c < 3; ++c) {
-                int linearPos = (x * size.y() + y) * 3 + c;
+                int linearPos = (y * size.x() + x) * 3 + c;
                 testFLIP[linearPos] = channelsTest[c] ? channelsTest[c]->eval({x, y}) : 0.0f;
                 referenceFLIP[linearPos] = channelsReference[c] ? channelsReference[c]->eval({x + offset.x(), y + offset.y()}) : 0.0f;
                 if (!(testFLIP[linearPos] <= 1.0f && referenceFLIP[linearPos] <= 1.0f)) {
@@ -1147,43 +1174,45 @@ void ImageCanvas::updateCachedFLIP()
         }
     }
     
-    bool applyMagmaMapToOutput = false;
+    bool applyMagmaMapToOutput = true;
+    int srcChannelCount = applyMagmaMapToOutput ? 3 : 1;
     bool computeMeanFLIPError = true;
     FLIP::Parameters flipParams {};
     float* pOutErrorMap = nullptr;
     FLIP::evaluate(referenceFLIP.data(), testFLIP.data(), size.x(), size.y(), useHDR, flipParams, applyMagmaMapToOutput, computeMeanFLIPError, mMeanFLIPError, &pOutErrorMap);
     if (pOutErrorMap)
     {
-       /* const std::vector<std::string> names{"R", "G", "B"};
-        auto channels = mErrorMap->channels(names);
-        float* pDstR = (float*)(channels[0]->data());
-        float* pDstG = (float*)(channels[1]->data());
-        float* pDstB = (float*)(channels[2]->data());
-        for (int x = 0; x < size.x(); ++x)
+        float* const pDst = mErrorMap->channels(kAllChannelNames).front()->floatData();
+        std::memset(pDst, 0, sizeof(float) * size.x() * size.y() * dstChannelCount);
+        for (int y = 0; y < size.y(); ++y)
         {
-            for (int y = 0; y < size.y(); ++y)
+            for (int x = 0; x < size.x(); ++x)
             {
-                int linearPos = (x * size.y() + y);
-                pDstR[linearPos] = pOutErrorMap[linearPos * 3 + 0];
-                pDstG[linearPos] = pOutErrorMap[linearPos * 3 + 1];
-                pDstB[linearPos] = pOutErrorMap[linearPos * 3 + 2];
-            }
-        }*/
-        vector<uint8_t> pngData(size.x() * size.y());
-        for (int x = 0; x < size.x(); ++x) {
-            for (int y = 0; y < size.y(); ++y) {
-                int linearPos = (y * size.x() + x);
-                float v = pOutErrorMap[linearPos + 0];
-                v = clamp(v, 0.0f, 1.0f);
-                pngData[linearPos] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+                int srcLinearPos = (y * size.x() + x) * srcChannelCount;
+                int dstLinearPos = (y * size.x() + x) * dstChannelCount;
+                for (int c = 0; c < dstChannelCount; ++c)
+                {
+                    pDst[dstLinearPos + c] = pOutErrorMap[srcLinearPos + std::min(c, srcChannelCount - 1)];
+                }
             }
         }
-        stbi_write_png("FLIP.png", size.x(), size.y(), 1, pngData.data(), size.x());
-
+#if DEBUG_OUTPUT_FLIP_TO_PNG
+        vector<uint8_t> pngData(size.x() * size.y() * srcChannelCount);
+        for (int x = 0; x < size.x(); ++x) {
+            for (int y = 0; y < size.y(); ++y) {
+                int linearPos = (y * size.x() + x) * srcChannelCount;
+                for (int c = 0; c < srcChannelCount; ++c) {
+                    float v = pOutErrorMap[linearPos + c];
+                    pngData[linearPos + c] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+                }
+            }
+        }
+        std::string errorMapName = "reference-" + mReference->shortName()  + ".test-" + mImage->shortName() + ".png";
+        stbi_write_png(errorMapName.data(), size.x(), size.y(), srcChannelCount, pngData.data(), srcChannelCount * size.x());
+#endif
         delete[] pOutErrorMap;
     }
-    
-    
+#endif
 }
 
 } // namespace tev

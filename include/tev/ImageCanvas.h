@@ -61,8 +61,8 @@ public:
 
     float applyExposureAndOffset(float value) const;
 
-    void setImage(std::shared_ptr<Image> image) { mImage = image; updateCachedFLIP(); }
-    void setReference(std::shared_ptr<Image> reference) { mReference = reference; updateCachedFLIP(); }
+    void setImage(std::shared_ptr<Image> image) { mImage = image; updateErrorMap(); }
+    void setReference(std::shared_ptr<Image> reference) { mReference = reference; updateErrorMap(); }
     void setRequestedChannelGroup(std::string_view groupName) { mRequestedChannelGroup = groupName; }
 
     nanogui::Vector2i getImageCoords(const Image* image, nanogui::Vector2i mousePos);
@@ -123,7 +123,7 @@ public:
 
 private:
     static std::vector<Channel> channelsFromImages(
-        std::shared_ptr<Image> image, std::shared_ptr<Image> reference, std::string_view requestedChannelGroup, EMetric metric, int priority
+        std::shared_ptr<Image> image, std::shared_ptr<Image> reference, std::string_view requestedChannelGroup, EMetric metric, int priority, std::shared_ptr<Image> errorMap
     );
 
     static Task<std::shared_ptr<CanvasStatistics>> computeCanvasStatistics(
@@ -132,7 +132,8 @@ private:
         std::string_view requestedChannelGroup,
         EMetric metric,
         const Box2i& region,
-        int priority
+        int priority,
+        std::shared_ptr<Image> errorMap
     );
 
     void drawPixelValuesAsText(NVGcontext* ctx);
@@ -145,8 +146,7 @@ private:
     nanogui::Matrix3f transform(const Image* image);
     nanogui::Matrix3f textureToNanogui(const Image* image);
     nanogui::Matrix3f displayWindowToNanogui(const Image* image);
-
-    void updateCachedFLIP();
+    void updateErrorMap();
 
     float mPixelRatio = 1;
     float mExposure = 0;
@@ -160,7 +160,7 @@ private:
 
     std::shared_ptr<Image> mImage;
     std::shared_ptr<Image> mReference;
-    std::unique_ptr<Image> mErrorMap;
+    std::shared_ptr<Image> mErrorMap;
     float mMeanFLIPError = 0.0f;
 
     std::string mRequestedChannelGroup = "";
