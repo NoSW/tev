@@ -29,7 +29,7 @@
 
 #ifdef TEV_SUPPORT_FLIP
 #include <tev/imageio/ImageLoader.h>
-
+//#define FLIP_ENABLE_CUDA 1
 #include <FLIP.h>
 #define DEBUG_OUTPUT_FLIP_TO_PNG 0
 #if DEBUG_OUTPUT_FLIP_TO_PNG
@@ -1145,8 +1145,7 @@ void ImageCanvas::updateErrorMap()
     imgData.channels = ImageLoader::makeRgbaInterleavedChannels(dstChannelCount, hasAlpha, mImage->size(), EPixelFormat::F32, EPixelFormat::F16);
     imgData.dataWindow = Box2i{ Vector2i{0}, mImage->size() };
     imgData.displayWindow = imgData.dataWindow;
-    const fs::path dummyPath("Internal-Used");
-    mErrorMap = std::make_shared<Image>(dummyPath, fs::file_time_type::clock::now(), std::move(imgData), std::string_view(""), true);
+    mErrorMap = std::make_shared<Image>("Internal-Used", fs::file_time_type::clock::now(), std::move(imgData), std::string_view(""), true);
 
     const auto size = mImage->size();
     const Vector2i offset = (Vector2i{mReference->size().x(), mReference->size().y()} - size) / 2;
@@ -1161,8 +1160,10 @@ void ImageCanvas::updateErrorMap()
     }
 
     bool useHDR = false;
-    for (int y = 0; y < size.y(); ++y) {
-        for (int x = 0; x < size.x(); ++x) {
+    ThreadPool::global().parallelFor(
+        0, size.y(),
+        [&testFLIP, &referenceFLIP, &channelsTest, &channelsReference, size, offset, &useHDR](int y) {
+            for (int x = 0; x < size.x(); ++x) {
             for (size_t c = 0; c < 3; ++c) {
                 int linearPos = (y * size.x() + x) * 3 + c;
                 testFLIP[linearPos] = channelsTest[c] ? channelsTest[c]->eval({x, y}) : 0.0f;
@@ -1172,8 +1173,10 @@ void ImageCanvas::updateErrorMap()
                 }
             }
         }
-    }
-    
+        },
+        0
+    );
+
     bool applyMagmaMapToOutput = true;
     int srcChannelCount = applyMagmaMapToOutput ? 3 : 1;
     bool computeMeanFLIPError = true;
@@ -1184,18 +1187,18 @@ void ImageCanvas::updateErrorMap()
     {
         float* const pDst = mErrorMap->channels(kAllChannelNames).front()->floatData();
         std::memset(pDst, 0, sizeof(float) * size.x() * size.y() * dstChannelCount);
-        for (int y = 0; y < size.y(); ++y)
-        {
-            for (int x = 0; x < size.x(); ++x)
-            {
+        ThreadPool::global().parallelFor(
+        0, size.y(),
+        [size, srcChannelCount, dstChannelCount, pDst, pOutErrorMap](int y) {
+            for (int x = 0; x < size.x(); ++x) {
                 int srcLinearPos = (y * size.x() + x) * srcChannelCount;
                 int dstLinearPos = (y * size.x() + x) * dstChannelCount;
                 for (int c = 0; c < dstChannelCount; ++c)
-                {
                     pDst[dstLinearPos + c] = pOutErrorMap[srcLinearPos + std::min(c, srcChannelCount - 1)];
-                }
             }
-        }
+        },
+        0
+    );
 #if DEBUG_OUTPUT_FLIP_TO_PNG
         vector<uint8_t> pngData(size.x() * size.y() * srcChannelCount);
         for (int x = 0; x < size.x(); ++x) {
@@ -1211,6 +1214,10 @@ void ImageCanvas::updateErrorMap()
         stbi_write_png(errorMapName.data(), size.x(), size.y(), srcChannelCount, pngData.data(), srcChannelCount * size.x());
 #endif
         delete[] pOutErrorMap;
+        tlog::info() << fmt::format("FLIP images, reference:{}({}x{}), test:{}({}x{}), mean error is {}\n",
+            mReference->shortName(), mReference->size().x(), mReference->size().y(),
+            mImage->shortName(), mImage->size().x(), mImage->size().y(),
+            mMeanFLIPError);
     }
 #endif
 }
