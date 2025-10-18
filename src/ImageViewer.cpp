@@ -1010,6 +1010,11 @@ void ImageViewer::draw_contents() {
     if (!mInitialized) {
         return;
     }
+#ifdef TEV_SUPPORT_FLIP
+    auto* filpWidget = static_cast<Button*>(mMetricButtonContainer->child_at(EMetric::FLIP));
+    if (filpWidget)
+        filpWidget->set_caption(fmt::format("FLIP ({:.4f})", mImageCanvas->getMeanFLIPError()));
+#endif
 
     // HACK HACK HACK: on Windows, when restoring a window from maximization, the old window size is restored _several times_, necessitating
     // a repeated resize to the actually desired window size.

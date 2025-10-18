@@ -121,6 +121,8 @@ public:
     float pixelRatio() const { return mPixelRatio; }
     void setPixelRatio(float ratio) { mPixelRatio = ratio; }
 
+    float getMeanFLIPError() const { return mMeanFLIPError; }
+
 private:
     static std::vector<Channel> channelsFromImages(
         std::shared_ptr<Image> image, std::shared_ptr<Image> reference, std::string_view requestedChannelGroup, EMetric metric, int priority, std::shared_ptr<Image> errorMap
